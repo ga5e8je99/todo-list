@@ -29,11 +29,7 @@ export default function TodoItem({ task, handelDelete, handelUpdate }) {
   
 
   const handleCompleted = () => {
-    // const updatedTasks = allTasks.map((t) =>
-    //   t.id === task.id ? { ...t, isCompleted: !t.isCompleted } : t
-    // );
-    // localStorage.setItem("task", JSON.stringify(updatedTasks));
-    // setAllTasks(updatedTasks);
+    
     dispatch({ type: "completed", payload: { id: task.id } });
     handelOpenAlert();
     if(!task.isCompleted){
@@ -54,8 +50,8 @@ export default function TodoItem({ task, handelDelete, handelUpdate }) {
           sx={{
             borderRadius: "14px",
             background: task.isCompleted
-              ? `linear-gradient(135deg, ${theme.palette.completed.main}20 0%, ${theme.palette.completed.dark}20 100%)`
-              : `linear-gradient(135deg, ${theme.palette.primary.main}15 0%, ${theme.palette.primary.dark}15 100%)`,
+              ? `linear-gradient(135deg, ${theme.palette.completed.main}20 0%, ${theme.palette.completed.main}20 100%)`
+              : `linear-gradient(135deg, ${theme.palette.primary.main}15 0%, ${theme.palette.primary.main}15 100%)`,
             border: `2px solid ${
               task.isCompleted
                 ? theme.palette.completed.main
@@ -152,7 +148,7 @@ export default function TodoItem({ task, handelDelete, handelUpdate }) {
                     fontWeight: 700,
                     textDecoration: task.isCompleted ? "line-through" : "none",
                     color: task.isCompleted
-                      ? theme.palette.completed.dark
+                      ? theme.palette.completed.main
                       : "text.primary",
                     flexGrow: 1,
                   }}

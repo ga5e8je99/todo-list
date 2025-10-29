@@ -7,12 +7,15 @@ import {
   Paper,
   Chip,
   Grid,
+  LinearProgress,
 } from "@mui/material";
 import TextField from "@mui/material/TextField";
 import TodoItem from "./TodoItem";
 import CloseIcon from "@mui/icons-material/Close";
 import InsertInvitationIcon from "@mui/icons-material/InsertInvitation";
+import SearchIcon from "@mui/icons-material/Search";
 import dayjs from "dayjs";
+import customParseFormat from "dayjs/plugin/customParseFormat";
 import { useTheme } from "@mui/material/styles";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
@@ -20,6 +23,7 @@ import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { TimePicker } from "@mui/x-date-pickers/TimePicker";
 import AddIcon from "@mui/icons-material/Add";
 import { useState, useEffect, useMemo } from "react";
+import InputAdornment from "@mui/material/InputAdornment";
 import { useTask } from "../Contexts/TaskContext";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -29,11 +33,16 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import TaskAltIcon from "@mui/icons-material/TaskAlt";
 
 import EditIcon from "@mui/icons-material/Edit";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
+
 import { useAlert } from "../Contexts/AlertContext";
-import Reducer from "../Reduce/Reduce";
+import alertSoundUrl from "../assets/Audio.mp3";
+dayjs.extend(customParseFormat);
 export default function TodoList() {
   const [value, setValue] = useState("all");
   const [showInput, setShowInput] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+
 
   const [isOpen, setIsOpen] = useState(false);
   const { handelOpenAlert, setTextAlert } = useAlert();
@@ -59,10 +68,58 @@ export default function TodoList() {
   const [nowTaskData, setNowTaskData] = useState({
     title: "",
     description: "",
-    time: "",
-    date: "",
+    time: dayjs().format("HH:mm A"),
+    date: dayjs().format("DD/MM/YYYY, dddd"),
     isCompleted: false,
   });
+
+  // helper: parse a task's due datetime into a dayjs or null
+  const parseDueAt = (t) => {
+    const dateStr = t?.date || "";
+    const timeStr = t?.time || "";
+    const candidates = [
+      "DD/MM/YYYY, dddd HH:mm A",
+      "DD/MM/YYYY ,dddd HH:mm A",
+      "DD/MM/YYYY HH:mm A",
+    ];
+    for (const fmt of candidates) {
+      const dt = dayjs(`${dateStr} ${timeStr}`.trim(), fmt, true);
+      if (dt.isValid()) return dt;
+    }
+    return null;
+  };
+
+  // play an alert sound from bundled audio file (graceful noop on failure).
+  // Uses an HTMLAudioElement so browser autoplay policies behave more predictably.
+  const playAlertSound = () => {
+    try {
+      if (!alertSoundUrl) return;
+      const audio = new Audio(alertSoundUrl);
+      audio.volume = 0.6;
+      // try to play, but ignore rejections (browsers may block autoplay)
+      const p = audio.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(() => {
+          // failed to play (likely autoplay policy); swallow the error
+        });
+      }
+    } catch (err) {
+      console.warn("playAlertSound failed:", err);
+    }
+  };
+
+  // Overdue dialog state
+  const [overdueTask, setOverdueTask] = useState(null);
+  const [isOverdueOpen, setIsOverdueOpen] = useState(false);
+  const dismissedOverdueIdsRef = (function(){
+    // simple lazy ref without importing useRef, to avoid extra import churn
+    // we keep it on window in dev to persist during hot reloads
+    if (typeof window !== "undefined") {
+      window.__dismissedOverdueIds = window.__dismissedOverdueIds || new Set();
+      return { current: window.__dismissedOverdueIds };
+    }
+    return { current: new Set() };
+  })();
 
   const handelShowDelete = (taskInfo) => {
     setIsOpen(true);
@@ -98,8 +155,8 @@ export default function TodoList() {
     setNowTaskData({
       title: "",
       description: "",
-      time: "",
-      date: "",
+      time: dayjs().format("HH:mm A"),
+      date: dayjs().format("DD/MM/YYYY, dddd"),
       isCompleted: false,
     });
 
@@ -110,7 +167,48 @@ export default function TodoList() {
   useEffect(() => {
     dispatch({ type: "get" });
     
-  }, []);
+  }, [dispatch]);
+
+  // persist theme mode
+
+
+  // Check for overdue tasks periodically
+  useEffect(() => {
+    const findOverdue = () => {
+      if (!allTasks || isOverdueOpen) return null;
+      const now = dayjs();
+      for (const t of allTasks) {
+        if (t.isCompleted) continue;
+        if (dismissedOverdueIdsRef.current.has(t.id)) continue;
+        const dueAt = parseDueAt(t);
+        if (!dueAt) continue;
+        if (now.isAfter(dueAt)) return t;
+      }
+      return null;
+    };
+
+    const check = () => {
+      const overdue = findOverdue();
+      if (overdue) {
+        setOverdueTask(overdue);
+        // play a short alert and open the dialog
+        try {
+          playAlertSound();
+        } catch {
+          // ignore audio errors
+        }
+        setIsOverdueOpen(true);
+      }
+    };
+
+    // initial check and set interval
+    check();
+    const id = setInterval(check, 30000);
+    return () => clearInterval(id);
+  // dismissedOverdueIdsRef is a stable window-backed container; intentionally omit it from
+  // the dependency array to avoid recreating the interval on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allTasks, isOverdueOpen]);
 
   const handleUpdate = () => {
     dispatch({
@@ -121,59 +219,62 @@ export default function TodoList() {
     handelOpenAlert();
     setTextAlert("Task has been updated successful !");
   };
-  const isCompleted = useMemo(() => {
-    return allTasks?.filter((e) => e.isCompleted).length > 0 ? (
-      allTasks
-        .filter((e) => e.isCompleted)
-        .map((e) => (
-          <TodoItem
-            key={e.id}
-            task={e}
-            handelDelete={() => {
-              handelShowDelete(task);
-            }}
-            handelUpdate={() => {
-              handelShowUpdate(task);
-            }}
-          />
-        ))
-    ) : (
-      <Typography
-        variant="body1"
-        color="text.secondary"
-        textAlign="center"
-        sx={{ mt: 4 }}
-      >
-        No completed tasks
-      </Typography>
-    );
-  }, [allTasks]);
-  const isUnCompleted = useMemo(() => {
-    return allTasks?.filter((e) => !e.isCompleted).length > 0 ? (
-      allTasks
-        .filter((e) => !e.isCompleted)
-        .map((e) => (
-          <TodoItem
-            key={e.id}
-            task={e}
-            handelDelete={() => {
-              handelShowDelete(task);
-            }}
-            handelUpdate={() => {
-              handelShowUpdate(task);
-            }}
-          />
-        ))
-    ) : (
-      <Typography
-        variant="body1"
-        color="text.secondary"
-        textAlign="center"
-        sx={{ mt: 4 }}
-      >
-        All tasks are completed!
-      </Typography>
-    );
+  const filteredTasks = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const list = (allTasks || []).filter((t) => {
+      if (!query) return true;
+      const title = (t.title || "").toLowerCase();
+      const description = (t.description || "").toLowerCase();
+      const date = (t.date || "").toLowerCase();
+      const time = (t.time || "").toLowerCase();
+      return (
+        title.includes(query) ||
+        description.includes(query) ||
+        date.includes(query) ||
+        time.includes(query)
+      );
+    });
+
+    // Attach parsed dueAt for sorting
+    const now = dayjs();
+    const withDue = list.map((t) => ({
+      task: t,
+      dueAt: parseDueAt(t),
+    }));
+
+    // Sort so that: overdue incomplete tasks come first (oldest due first),
+    // then tasks with earliest due dates, then tasks without due date.
+    withDue.sort((a, b) => {
+      const aOver = !a.task.isCompleted && a.dueAt && now.isAfter(a.dueAt);
+      const bOver = !b.task.isCompleted && b.dueAt && now.isAfter(b.dueAt);
+      if (aOver !== bOver) return aOver ? -1 : 1;
+      if (a.dueAt && b.dueAt) {
+        if (a.dueAt.isBefore(b.dueAt)) return -1;
+        if (a.dueAt.isAfter(b.dueAt)) return 1;
+        return 0;
+      }
+      if (a.dueAt) return -1;
+      if (b.dueAt) return 1;
+      return 0;
+    });
+
+    return withDue.map((x) => x.task);
+  }, [allTasks, searchQuery]);
+
+  const completedTasks = useMemo(
+    () => filteredTasks.filter((t) => t.isCompleted),
+    [filteredTasks]
+  );
+  const uncompletedTasks = useMemo(
+    () => filteredTasks.filter((t) => !t.isCompleted),
+    [filteredTasks]
+  );
+
+  const progressPercent = useMemo(() => {
+    const total = allTasks?.length || 0;
+    if (total === 0) return 0;
+    const done = allTasks.filter((t) => t.isCompleted).length;
+    return Math.round((done / total) * 100);
   }, [allTasks]);
   return (
     <>
@@ -390,6 +491,87 @@ export default function TodoList() {
           </Button>
         </DialogActions>
       </Dialog>
+      {/* Overdue Alert Dialog */}
+      <Dialog
+        open={isOverdueOpen}
+        onClose={() => {
+          if (overdueTask?.id) dismissedOverdueIdsRef.current.add(overdueTask.id);
+          setIsOverdueOpen(false);
+          setOverdueTask(null);
+        }}
+        PaperProps={{
+          sx: {
+            borderRadius: "16px",
+            padding: 0,
+            width: "100%",
+            maxWidth: "480px",
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            fontWeight: 700,
+            color: theme.palette.warning.main,
+          }}
+        >
+          <WarningAmberIcon color="warning" />
+          Task overdue
+        </DialogTitle>
+        <DialogContent sx={{ pt: 0 }}>
+          <Typography variant="body1" sx={{ mt: 1 }}>
+            The due time for this task has passed and it is not marked as done.
+          </Typography>
+          {overdueTask && (
+            <Paper elevation={0} sx={{ p: 2, mt: 2, bgcolor: "rgba(255, 193, 7, 0.12)" }}>
+              <Typography variant="subtitle1" fontWeight={700}>
+                {overdueTask.title}
+              </Typography>
+              {overdueTask.description && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {overdueTask.description}
+                </Typography>
+              )}
+              {(overdueTask.date || overdueTask.time) && (
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
+                  Due {overdueTask.date} {overdueTask.time}
+                </Typography>
+              )}
+            </Paper>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, justifyContent: "space-between" }}>
+          <Button
+            variant="outlined"
+            onClick={() => {
+              if (overdueTask?.id) dismissedOverdueIdsRef.current.add(overdueTask.id);
+              setIsOverdueOpen(false);
+              setOverdueTask(null);
+            }}
+            sx={{ borderRadius: "12px", textTransform: "none", px: 3 }}
+          >
+            Dismiss
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<TaskAltIcon />}
+            onClick={() => {
+              if (!overdueTask) return;
+              const updated = { ...overdueTask, isCompleted: true };
+              dispatch({ type: "update", payload: { title: updated.title, id: updated.id, updateTask: updated } });
+              setIsOverdueOpen(false);
+              setOverdueTask(null);
+              handelOpenAlert();
+              setTextAlert("Task marked as completed.");
+            }}
+            sx={{ borderRadius: "12px", textTransform: "none", px: 3 }}
+          >
+            Mark as done
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Box
         sx={{
           position: "relative",
@@ -411,7 +593,10 @@ export default function TodoList() {
             overflow: "hidden",
             display: "flex",
             flexDirection: "column",
-            height: "80vh",
+            height: "85vh",
+            boxShadow:
+              "0 10px 30px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06)",
+            bgcolor: "background.paper",
           }}
         >
           {/* Header Section */}
@@ -421,33 +606,69 @@ export default function TodoList() {
               p: 3,
               color: "white",
               textAlign: "center",
+              position: "relative",
             }}
           >
             <Typography variant="h4" component="h1" fontWeight="medium">
               My Todo
             </Typography>
+
+            <Box sx={{ mt: 2 }}>
+              <LinearProgress
+                variant="determinate"
+                value={progressPercent}
+                sx={{
+                  height: 8,
+                  borderRadius: 999,
+                  backgroundColor: "rgba(255,255,255,0.35)",
+                  "& .MuiLinearProgress-bar": { backgroundColor: "#fff" },
+                }}
+              />
+              <Typography variant="caption" sx={{ mt: 0.75, display: "block" }}>
+                {progressPercent}% completed • {allTasks?.length || 0} total
+              </Typography>
+            </Box>
           </Box>
 
           {/* Filter Buttons */}
           <Box
             sx={{
               display: "flex",
-              justifyContent: "center",
-              gap: 2,
+              flexDirection: "column",
+              gap: 1.5,
               p: 2,
               bgcolor: "background.paper",
             }}
           >
-            {["all", "completed", "uncompleted"].map((filter) => (
-              <Chip
-                key={filter}
-                label={filter.charAt(0).toUpperCase() + filter.slice(1)}
-                onClick={() => setValue(filter)}
-                color={value === filter ? "primary" : "default"}
-                variant={value === filter ? "filled" : "outlined"}
-                sx={{ textTransform: "capitalize" }}
-              />
-            ))}
+            <Box sx={{ display: "flex", justifyContent: "center", gap: 1.25 }}>
+              {["all", "completed", "uncompleted"].map((filter) => (
+                <Chip
+                  key={filter}
+                  label={filter.charAt(0).toUpperCase() + filter.slice(1)}
+                  onClick={() => setValue(filter)}
+                  color={value === filter ? "primary" : "default"}
+                  variant={value === filter ? "filled" : "outlined"}
+                  sx={{ textTransform: "capitalize" }}
+                />
+              ))}
+            </Box>
+            <TextField
+              placeholder="Search by title, description, date or time"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              size="small"
+              sx={{
+                mt: 0.5,
+              }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon fontSize="small" />
+                  </InputAdornment>
+                ),
+                sx: { borderRadius: 2 },
+              }}
+            />
           </Box>
 
           <Divider />
@@ -459,12 +680,17 @@ export default function TodoList() {
               overflowY: "auto",
               p: 2,
               bgcolor: "background.default",
+              "&::-webkit-scrollbar": { width: 8 },
+              "&::-webkit-scrollbar-thumb": {
+                backgroundColor: "rgba(0,0,0,0.2)",
+                borderRadius: 8,
+              },
             }}
           >
             {value === "all" && (
               <>
-                {allTasks?.length > 0 ? (
-                  allTasks.map((task) => (
+                {filteredTasks?.length > 0 ? (
+                  filteredTasks.map((task) => (
                     <TodoItem
                       key={task.id}
                       task={task}
@@ -483,15 +709,67 @@ export default function TodoList() {
                     textAlign="center"
                     sx={{ mt: 4 }}
                   >
-                    No tasks yet. Add your first task!
+                    {searchQuery ? "No results for your search." : "No tasks yet. Add your first task!"}
                   </Typography>
                 )}
               </>
             )}
 
-            {value === "completed" && <>{isCompleted}</>}
+            {value === "completed" && (
+              <>
+                {completedTasks.length > 0 ? (
+                  completedTasks.map((t) => (
+                    <TodoItem
+                      key={t.id}
+                      task={t}
+                      handelDelete={() => {
+                        handelShowDelete(t);
+                      }}
+                      handelUpdate={() => {
+                        handelShowUpdate(t);
+                      }}
+                    />
+                  ))
+                ) : (
+                  <Typography
+                    variant="body1"
+                    color="text.secondary"
+                    textAlign="center"
+                    sx={{ mt: 4 }}
+                  >
+                    No completed tasks
+                  </Typography>
+                )}
+              </>
+            )}
 
-            {value === "uncompleted" && <>{isUnCompleted}</>}
+            {value === "uncompleted" && (
+              <>
+                {uncompletedTasks.length > 0 ? (
+                  uncompletedTasks.map((t) => (
+                    <TodoItem
+                      key={t.id}
+                      task={t}
+                      handelDelete={() => {
+                        handelShowDelete(t);
+                      }}
+                      handelUpdate={() => {
+                        handelShowUpdate(t);
+                      }}
+                    />
+                  ))
+                ) : (
+                  <Typography
+                    variant="body1"
+                    color="text.secondary"
+                    textAlign="center"
+                    sx={{ mt: 4 }}
+                  >
+                    All tasks are completed!
+                  </Typography>
+                )}
+              </>
+            )}
           </Box>
 
           {/* Add Task Button */}
@@ -500,7 +778,14 @@ export default function TodoList() {
               fullWidth
               variant="contained"
               startIcon={<AddIcon />}
-              onClick={() => setShowInput(true)}
+              onClick={() => {
+                setNowTaskData((prev) => ({
+                  ...prev,
+                  time: dayjs().format("HH:mm A"),
+                  date: dayjs().format("DD/MM/YYYY, dddd"),
+                }));
+                setShowInput(true);
+              }}
               sx={{
                 bgcolor: "primary.main",
                 "&:hover": { bgcolor: "primary.dark" },
@@ -587,13 +872,13 @@ export default function TodoList() {
                 <Box sx={{ mb: 2 }}>
                   <DatePicker
                     label="Date"
-                    defaultValue={dayjs(nowTaskData.date)}
+                    value={dayjs(nowTaskData.date, "DD/MM/YYYY, dddd")}
                     minDate={dayjs()}
                     format="DD/MM/YYYY, dddd"
                     onChange={(date) => {
                       setNowTaskData({
                         ...nowTaskData,
-                        date: date.format("DD/MM/YYYY ,dddd"),
+                        date: date ? date.format("DD/MM/YYYY, dddd") : "",
                       });
                     }}
                     sx={{ width: "100%", mb: 2 }}
@@ -603,9 +888,9 @@ export default function TodoList() {
                 <Box sx={{ mb: 3 }}>
                   <TimePicker
                     label="Time"
-                    defaultValue={dayjs(nowTaskData.time)}
+                    value={dayjs(nowTaskData.time, "HH:mm A")}
                     minTime={
-                      dayjs(nowTaskData.date, "DD/MM/YYYY").isSame(
+                      dayjs(nowTaskData.date, "DD/MM/YYYY, dddd").isSame(
                         dayjs(),
                         "day"
                       )
@@ -616,7 +901,7 @@ export default function TodoList() {
                     onChange={(time) => {
                       setNowTaskData({
                         ...nowTaskData,
-                        time: time.format("HH:mm A"),
+                        time: time ? time.format("HH:mm A") : "",
                       });
                     }}
                     sx={{ width: "100%" }}
