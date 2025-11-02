@@ -22,7 +22,7 @@ import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { TimePicker } from "@mui/x-date-pickers/TimePicker";
 import AddIcon from "@mui/icons-material/Add";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import InputAdornment from "@mui/material/InputAdornment";
 import { useTask } from "../Contexts/TaskContext";
 import Dialog from "@mui/material/Dialog";
@@ -68,12 +68,11 @@ export default function TodoList() {
   const [nowTaskData, setNowTaskData] = useState({
     title: "",
     description: "",
-    time: dayjs().format("HH:mm A"),
+    time: dayjs().add(1, "minute").format("HH:mm A"),
     date: dayjs().format("DD/MM/YYYY, dddd"),
     isCompleted: false,
   });
 
-  // helper: parse a task's due datetime into a dayjs or null
   const parseDueAt = (t) => {
     const dateStr = t?.date || "";
     const timeStr = t?.time || "";
@@ -89,31 +88,45 @@ export default function TodoList() {
     return null;
   };
 
-  // play an alert sound from bundled audio file (graceful noop on failure).
-  // Uses an HTMLAudioElement so browser autoplay policies behave more predictably.
   const playAlertSound = () => {
     try {
       if (!alertSoundUrl) return;
+      if (alertAudioRef.current) return;
       const audio = new Audio(alertSoundUrl);
+      audio.preload = "auto";
+      audio.loop = true;
       audio.volume = 0.6;
-      // try to play, but ignore rejections (browsers may block autoplay)
+      alertAudioRef.current = audio;
       const p = audio.play();
       if (p && typeof p.catch === "function") {
-        p.catch(() => {
-          // failed to play (likely autoplay policy); swallow the error
-        });
+        p.catch(() => {});
       }
     } catch (err) {
       console.warn("playAlertSound failed:", err);
     }
   };
 
-  // Overdue dialog state
+  const alertAudioRef = useRef(null);
+
+  const stopAlertSound = () => {
+    try {
+      const a = alertAudioRef.current;
+      if (!a) return;
+      a.pause();
+      try {
+        a.currentTime = 0;
+      } catch {
+        return;
+      }
+      alertAudioRef.current = null;
+    } catch {
+      return;
+    }
+  };
+
   const [overdueTask, setOverdueTask] = useState(null);
   const [isOverdueOpen, setIsOverdueOpen] = useState(false);
   const dismissedOverdueIdsRef = (function(){
-    // simple lazy ref without importing useRef, to avoid extra import churn
-    // we keep it on window in dev to persist during hot reloads
     if (typeof window !== "undefined") {
       window.__dismissedOverdueIds = window.__dismissedOverdueIds || new Set();
       return { current: window.__dismissedOverdueIds };
@@ -140,7 +153,6 @@ export default function TodoList() {
     
   };
 
-  // start add task
   function handelAddTask() {
     dispatch({
       type: "added",
@@ -155,7 +167,7 @@ export default function TodoList() {
     setNowTaskData({
       title: "",
       description: "",
-      time: dayjs().format("HH:mm A"),
+      time: dayjs().add(1, "minute").format("HH:mm A"),
       date: dayjs().format("DD/MM/YYYY, dddd"),
       isCompleted: false,
     });
@@ -163,16 +175,11 @@ export default function TodoList() {
     handelOpenAlert();
     setTextAlert("Task has been added successful !");
   }
-  // end add task
   useEffect(() => {
     dispatch({ type: "get" });
     
   }, [dispatch]);
 
-  // persist theme mode
-
-
-  // Check for overdue tasks periodically
   useEffect(() => {
     const findOverdue = () => {
       if (!allTasks || isOverdueOpen) return null;
@@ -191,24 +198,19 @@ export default function TodoList() {
       const overdue = findOverdue();
       if (overdue) {
         setOverdueTask(overdue);
-        // play a short alert and open the dialog
         try {
           playAlertSound();
-        } catch {
-          // ignore audio errors
-        }
+          } catch (err) {
+            console.error("Failed to play alert sound:", err);
+          }
         setIsOverdueOpen(true);
       }
     };
 
-    // initial check and set interval
     check();
     const id = setInterval(check, 30000);
     return () => clearInterval(id);
-  // dismissedOverdueIdsRef is a stable window-backed container; intentionally omit it from
-  // the dependency array to avoid recreating the interval on every render.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allTasks, isOverdueOpen]);
+  }, [allTasks, isOverdueOpen, dismissedOverdueIdsRef]);
 
   const handleUpdate = () => {
     dispatch({
@@ -235,24 +237,29 @@ export default function TodoList() {
       );
     });
 
-    // Attach parsed dueAt for sorting
     const now = dayjs();
     const withDue = list.map((t) => ({
       task: t,
       dueAt: parseDueAt(t),
     }));
 
-    // Sort so that: overdue incomplete tasks come first (oldest due first),
-    // then tasks with earliest due dates, then tasks without due date.
     withDue.sort((a, b) => {
-      const aOver = !a.task.isCompleted && a.dueAt && now.isAfter(a.dueAt);
-      const bOver = !b.task.isCompleted && b.dueAt && now.isAfter(b.dueAt);
-      if (aOver !== bOver) return aOver ? -1 : 1;
+      if (a.task.isCompleted !== b.task.isCompleted) {
+        return a.task.isCompleted ? 1 : -1;
+      }
+      
+      if (!a.task.isCompleted) {
+        const aOver = a.dueAt && now.isAfter(a.dueAt);
+        const bOver = b.dueAt && now.isAfter(b.dueAt);
+        if (aOver !== bOver) return aOver ? -1 : 1;
+      }
+
       if (a.dueAt && b.dueAt) {
         if (a.dueAt.isBefore(b.dueAt)) return -1;
         if (a.dueAt.isAfter(b.dueAt)) return 1;
         return 0;
       }
+      
       if (a.dueAt) return -1;
       if (b.dueAt) return 1;
       return 0;
@@ -278,7 +285,6 @@ export default function TodoList() {
   }, [allTasks]);
   return (
     <>
-      {/* Delete Confirmation Dialog */}
       <Dialog
         open={isOpen}
         onClose={() => setIsOpen(false)}
@@ -286,7 +292,6 @@ export default function TodoList() {
           sx: {
             borderRadius: "16px",
             padding: "24px",
-            width: "100%",
             maxWidth: "450px",
           },
         }}
@@ -351,7 +356,7 @@ export default function TodoList() {
           </Button>
         </DialogActions>
       </Dialog>
-      {/* Update Task Dialog */}
+      
       <Dialog
         open={isOpenUpdate}
         onClose={() => setIsOpenUpdate(false)}
@@ -491,14 +496,15 @@ export default function TodoList() {
           </Button>
         </DialogActions>
       </Dialog>
-      {/* Overdue Alert Dialog */}
+      
       <Dialog
         open={isOverdueOpen}
         onClose={() => {
-          if (overdueTask?.id) dismissedOverdueIdsRef.current.add(overdueTask.id);
-          setIsOverdueOpen(false);
-          setOverdueTask(null);
-        }}
+            if (overdueTask?.id) dismissedOverdueIdsRef.current.add(overdueTask.id);
+            stopAlertSound();
+            setIsOverdueOpen(false);
+            setOverdueTask(null);
+          }}
         PaperProps={{
           sx: {
             borderRadius: "16px",
@@ -547,6 +553,7 @@ export default function TodoList() {
             variant="outlined"
             onClick={() => {
               if (overdueTask?.id) dismissedOverdueIdsRef.current.add(overdueTask.id);
+              stopAlertSound();
               setIsOverdueOpen(false);
               setOverdueTask(null);
             }}
@@ -561,6 +568,7 @@ export default function TodoList() {
               if (!overdueTask) return;
               const updated = { ...overdueTask, isCompleted: true };
               dispatch({ type: "update", payload: { title: updated.title, id: updated.id, updateTask: updated } });
+              stopAlertSound();
               setIsOverdueOpen(false);
               setOverdueTask(null);
               handelOpenAlert();
@@ -599,7 +607,7 @@ export default function TodoList() {
             bgcolor: "background.paper",
           }}
         >
-          {/* Header Section */}
+          
           <Box
             sx={{
               background: "linear-gradient(to right, #009592, #007a78)",
@@ -630,7 +638,7 @@ export default function TodoList() {
             </Box>
           </Box>
 
-          {/* Filter Buttons */}
+          
           <Box
             sx={{
               display: "flex",
@@ -673,7 +681,7 @@ export default function TodoList() {
 
           <Divider />
 
-          {/* Tasks List */}
+          
           <Box
             sx={{
               flex: 1,
@@ -772,7 +780,7 @@ export default function TodoList() {
             )}
           </Box>
 
-          {/* Add Task Button */}
+          
           <Box sx={{ p: 2, bgcolor: "background.paper" }}>
             <Button
               fullWidth
@@ -781,7 +789,7 @@ export default function TodoList() {
               onClick={() => {
                 setNowTaskData((prev) => ({
                   ...prev,
-                  time: dayjs().format("HH:mm A"),
+                  time: dayjs().add(1, "minute").format("HH:mm A"),
                   date: dayjs().format("DD/MM/YYYY, dddd"),
                 }));
                 setShowInput(true);
@@ -798,7 +806,7 @@ export default function TodoList() {
           </Box>
         </Paper>
 
-        {/* Add Task Modal */}
+        
         <Box
           sx={{
             position: "fixed",

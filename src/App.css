@@ -70,3 +70,6 @@ body {
   padding: 0 !important;
   margin-top: 40px !important;
 }
+.MuiDialogTitle-root+.css-188famg-MuiDialogContent-root {
+    padding-top: 36px !important;
+}
